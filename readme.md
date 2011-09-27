@@ -1,3 +1,5 @@
+This is the General Game Player used in the 2011 General Game Playing Competition http://games.stanford.edu
+
 Requirements
 =============
 
@@ -9,27 +11,9 @@ Requirements
 	* net/ssh gem
 
 * ACE
+	http://dtai.cs.kuleuven.be/ACE/
 
 * EclipseCLP
-
-Install
-========
-Random MCTS player
-------------------------
-	git clone https://jvandenbroeck@github.com/jvandenbroeck/The-Turk.git
-	git checkout random
-	./fixlib.sh
-	./run.sh
-	or
-	./run.sh > run.log
-
-RRL-Benchmark-Update  (RRL Server)
------------------------------------
-	cd /tmp/
-	git clone https://jvandenbroeck@github.com/jvandenbroeck/The-Turk.git
-	mv The-Turk Thesis-RRL-MCTS
-	cd Thesis-RRL-MCTS	
-	git checkout rrl-benchmark-update
 
 Setup SSH/SCP connection and ACE server
 -----------------------------------------
@@ -53,7 +37,3 @@ Start the RRL Server
 	./run.sh
 	or
 	./run.sh > run.log
-
-Production
------------
-* verwijder lock(s) in UCT.java
