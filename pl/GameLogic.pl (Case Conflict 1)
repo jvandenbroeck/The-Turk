@@ -1,0 +1,486 @@
+% Centurio a General Game Player
+%
+% Copyright (C) 2009 Felix Maximilian Möller, Marius Schneider and Martin Wegner
+%
+% This file is part of Centurio.
+%
+% Centurio is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+%
+% Centurio is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+%
+% You should have received a copy of the GNU General Public License along with Centurio. If not, see <http://www.gnu.org/licenses/>.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%                                                                           %%
+%% AI for Centurio a General Game Player                                     %%
+%%                                                                           %%
+%% Authors: Felix Maximilian Möller, Marius Schneider and Martin Wegner      %%
+%%                                                                           %%
+%% Date: 07.06.2009                                                          %%
+%%                                                                           %%
+%% Version: 2.1                                                              %%
+%%                                                                           %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% TODO: Weil nextState von Java aufgerufen wird mit Liste von Moves ohne ggp_move() Struktur voll blöd, deswegen expandedState Prädikat, eigentlich hat randomMoves diese Struktur ausgegeben
+%       da aktuelle Strategie bei parallelen Spielen unhaltbar ist, könnte combine Prädikat raus und dann kann man wieder überlegen randomMove diese Struktur aufbauen zu lassen
+% TODO: initState und roles prädikate oft aufgerufen, obwohl es Java bekannt sein sollte, z.B. bei isParallelGame, zwar billige Operationen, aber evtl. als Parameter übergeben, was wieder größe Anfragen bedeutet
+% TODO: Auf terminal state prüfen bei randomMoves und legalMoves...?
+% TODO: randomGame Punkte aller Spieler zurück geben, terminal state dann unwichtig
+% TODO: Mergen von Aufrufen, z.B. alle Zustände aller Childs mit einem Mal
+% TODO: Prädikatensprünge minimieren in dem man den Code der einzelnen Prädikate in ein Prädikat steckt?
+
+:- set_flag(debug_compile, off).
+:- set_flag(variable_names, off).
+
+% Event 68: calling undefined procedure
+% We want to fail if an undefined procedure is called
+:- set_event_handler(68, fail/0).
+
+% Needed for the random_element(+Values, -X) predicate
+:- lib(tentative).
+
+%writing
+:-mode output_data(++,+).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%                                                                           %%
+%% Help predicates                                                           %%
+%%                                                                           %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+sortedFindall(Element, Expression, ListOfElements) :-
+	findall(Element, Expression, ListOfElementsTemp),
+	sort(ListOfElementsTemp, ListOfElements).
+
+% Only for use in ggp_does(Role, Move, CurrentState)
+fastMember(Head, [Head | _Tail]).
+fastMember(Head1, [_Head2, ggp_move(Role, Move) | Tail]) :-
+	fastMember(Head1, [ggp_move(Role, Move) | Tail]).
+
+% Converts a List [a, b, c, ...] into a List [[a], [b], [c], ...]
+antiflatten([], []) :- !.
+antiflatten([Head | Tail], [[Head] | Result]) :-
+	antiflatten(Tail, Result).
+
+% Calculates all combinations for a List [[[a, ...], [b, ...], ...], [[c, ...], [d, ...], ...], ...]
+% Example1:
+% Query: [[[a], [b]], [[c], [d]], [[e], [f]]]
+% Result: [[a, c, e], [a, c, f], [a, d, e], [a, d, f], [b, c, e], [b, c, f], [b, d, e], [b, d, f]]
+% Example2:
+% Query: [[[a, c], [a, d], [b, c], [b, d]], [[e], [f]]]
+% Result: [[a, c, e], [a, c, f], [a, d, e], [a, d, f], [b, c, e], [b, c, f], [b, d, e], [b, d, f]]
+combine([ListOfLists | []], ListOfLists) :- !.
+combine([ListOfLists1, ListOfLists2 | []], Result) :- !,
+	outerLoop(ListOfLists1, ListOfLists2, Result).
+combine([ListOfLists1, ListOfLists2 | ListOfListsOfLists], Result) :-
+	outerLoop(ListOfLists1, ListOfLists2, OuterLoopResult),
+	combine([OuterLoopResult | ListOfListsOfLists], Result).
+
+% Result from outerLoop is a ListOfLists
+outerLoop([], _ListOfLists, []) :- !.
+outerLoop([List | ListOfLists1], ListOfLists2, Result) :-
+	innerLoop(List, ListOfLists2, InnerLoopResult),
+	outerLoop(ListOfLists1, ListOfLists2, OuterLoopResult),
+	append(InnerLoopResult, OuterLoopResult, Result).
+
+% Result from innerLoop is a ListOfLists
+innerLoop(_List, [], []) :- !.
+innerLoop(List1, [List2 | ListOfLists], [List3 | InnerLoopResult]) :-
+	append(List1, List2, List3),
+	innerLoop(List1, ListOfLists, InnerLoopResult).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%                                                                           %%
+%% Main predicates                                                           %%
+%%                                                                           %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+ggp_true(Fact, CurrentState) :-
+	member(Fact, CurrentState).
+
+ggp_does(Role, Move, CurrentState) :-
+	fastMember(ggp_move(Role, Move), CurrentState).
+
+% sortedFindall not possible because the order of the roles is important for interpreting the PLAY and STOP messages
+roles(Roles) :-
+	findall(Role, ggp_role(Role), Roles).
+
+initState(InitState) :-
+	sortedFindall(Fact, ggp_init(Fact), InitState).
+
+terminalState(CurrentState) :-
+	ggp_terminal(CurrentState), !.
+
+nextState(CurrentState, Moves, NextState) :-
+	expandedState(CurrentState, Moves, ExpandedState),
+	sortedFindall(Fact, ggp_next(Fact, ExpandedState), NextState).
+
+randomMoves(CurrentState, RandomMoves) :-
+	roles(Roles),
+	(
+		foreach(Role, Roles),
+		foreach(RandomMove, RandomMoves),
+		param(CurrentState)
+		do
+		(
+			legalMoves(CurrentState, Role, LegalMoves),
+			qSelectMoves(LegalMoves, RandomMove)
+		)
+	).
+
+
+expandedState(CurrentState, Moves, ExpandedState) :-
+	roles(Roles),
+	(
+		foreach(Role, Roles),
+		foreach(Move, Moves),
+		foreach(ggp_move(Role, Move), ListOfRolesWithMoves)
+		do
+		(
+			true
+		)
+	),
+	append(ListOfRolesWithMoves, CurrentState, ExpandedState).
+
+legalMoves(CurrentState, Role, LegalMoves) :-
+    sortedFindall(Move, ggp_legal(Role, Move, CurrentState), LegalMoves).
+
+q(S, 100.0) :- line(S, x), !.
+% 2160.0 examples.
+q(S, 17.3125423728814) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,3,x),cell(S, 2,A,x),cell(S, 1,D,x),cell(S, D,1,o),cell(S, 1,A,x),cell(S, 2,B,x), !.
+% 59.0 examples.
+q(S, 35.9724137931034) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,3,x),cell(S, 2,A,x),cell(S, 1,D,x),cell(S, D,1,o),cell(S, 1,A,x), !.
+% 58.0 examples.
+q(S, 34.56) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,3,x),cell(S, 2,A,x),cell(S, 1,D,x),cell(S, D,1,o),cell(S, 1,E,o),cell(S, F,E,b), !.
+% 62.0 examples.
+q(S, 46.0047058823529) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,3,x),cell(S, 2,A,x),cell(S, 1,D,x),cell(S, D,1,o),cell(S, 1,E,o), !.
+% 85.0 examples.
+q(S, 32.2686144927536) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,3,x),cell(S, 2,A,x),cell(S, 1,D,x),cell(S, D,1,o), !.
+% 69.0 examples.
+q(S, 54.5352112676056) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,3,x),cell(S, 2,A,x),cell(S, 1,D,x),cell(S, 3,E,x),cell(S, F,F,o),cell(S, A,F,x), !.
+% 71.0 examples.
+q(S, 42.7127927927928) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,3,x),cell(S, 2,A,x),cell(S, 1,D,x),cell(S, 3,E,x),cell(S, F,F,o), !.
+% 111.0 examples.
+q(S, 54.5066666666667) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,3,x),cell(S, 2,A,x),cell(S, 1,D,x),cell(S, 3,E,x), !.
+% 84.0 examples.
+q(S, 35.1806060606061) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,3,x),cell(S, 2,A,x),cell(S, 1,D,x),cell(S, 3,A,o), !.
+% 99.0 examples.
+q(S, 46.5094686567164) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,3,x),cell(S, 2,A,x),cell(S, 1,D,x), !.
+% 67.0 examples.
+q(S, 33.6354909090909) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,3,x),cell(S, 2,A,x),cell(S, 1,1,b),cell(S, A,3,b), !.
+% 88.0 examples.
+q(S, 44.5666742857143) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,3,x),cell(S, 2,A,x),cell(S, 1,1,b), !.
+% 70.0 examples.
+q(S, 15.9224242424242) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,3,x),cell(S, 2,A,x),cell(S, 1,C,o), !.
+% 66.0 examples.
+q(S, 30.1179373493976) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,3,x),cell(S, 2,A,x), !.
+% 83.0 examples.
+q(S, 56.2457971014493) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,3,x),cell(S, 2,3,o), !.
+% 69.0 examples.
+q(S, 45.1428571428571) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,3,x), !.
+% 56.0 examples.
+q(S, 23.5068952380952) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, A,3,o),cell(S, A,C,x),cell(S, B,A,b), !.
+% 84.0 examples.
+q(S, 33.9952941176471) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, A,3,o),cell(S, A,C,x), !.
+% 68.0 examples.
+q(S, 16.1455542857143) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, A,3,o), !.
+% 70.0 examples.
+q(S, 39.847868852459) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, 1,A,x),cell(S, 3,A,o), !.
+% 61.0 examples.
+q(S, 49.1776) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, 1,A,x), !.
+% 50.0 examples.
+q(S, 25.0644983606557) :- cell(S, A,B,b),cell(S, 2,2,x),cell(S, C,C,o), !.
+% 61.0 examples.
+q(S, 36.961193220339) :- cell(S, A,B,b),cell(S, 2,2,x), !.
+% 59.0 examples.
+q(S, 36.8301886792453) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, D,B,x),cell(S, A,D,x),cell(S, E,E,x),cell(S, E,A,o), !.
+% 53.0 examples.
+q(S, 54.4561403508772) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, D,B,x),cell(S, A,D,x),cell(S, E,E,x),cell(S, 3,B,b), !.
+% 57.0 examples.
+q(S, 46.2857142857143) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, D,B,x),cell(S, A,D,x),cell(S, E,E,x), !.
+% 56.0 examples.
+q(S, 31.3971014492754) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, D,B,x),cell(S, A,D,x),cell(S, 1,3,x), !.
+% 138.0 examples.
+q(S, 22.8627692307692) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, D,B,x),cell(S, A,D,x), !.
+% 65.0 examples.
+q(S, 1.35211267605634) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, D,B,x),cell(S, A,A,o),cell(S, A,D,o),cell(S, C,A,x), !.
+% 71.0 examples.
+q(S, 13.6) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, D,B,x),cell(S, A,A,o),cell(S, A,D,o), !.
+% 80.0 examples.
+q(S, 33.2972972972973) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, D,B,x),cell(S, A,A,o),cell(S, A,E,x), !.
+% 74.0 examples.
+q(S, 33.792) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, D,B,x),cell(S, A,A,o),cell(S, D,A,o), !.
+% 55.0 examples.
+q(S, 13.6192) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, D,B,x),cell(S, A,A,o),cell(S, D,E,o), !.
+% 75.0 examples.
+q(S, 23.9343659574468) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, D,B,x),cell(S, A,A,o), !.
+% 94.0 examples.
+q(S, 26.6554385964912) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, D,B,x),cell(S, D,2,o),cell(S, D,A,x), !.
+% 57.0 examples.
+q(S, 37.7593756097561) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, D,B,x),cell(S, D,2,o), !.
+% 82.0 examples.
+q(S, 23.9640380952381) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, D,B,x),cell(S, 1,A,x),cell(S, 1,2,b), !.
+% 63.0 examples.
+q(S, 34.249696969697) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, D,B,x),cell(S, 1,A,x), !.
+% 99.0 examples.
+q(S, 19.579904) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, D,B,x), !.
+% 100.0 examples.
+q(S, 21.9457488372093) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, 1,B,o),cell(S, B,D,b), !.
+% 86.0 examples.
+q(S, 10.2962637362637) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, 1,B,o), !.
+% 91.0 examples.
+q(S, 29.5444210526316) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, B,3,o), !.
+% 76.0 examples.
+q(S, 11.8977049180328) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, 2,1,x),cell(S, C,3,x), !.
+% 61.0 examples.
+q(S, 25.1896788732394) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o),cell(S, 2,1,x), !.
+% 71.0 examples.
+q(S, 26.8568068376068) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, C,C,o), !.
+% 117.0 examples.
+q(S, 48.0395061728395) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, 2,C,o),cell(S, C,2,o), !.
+% 81.0 examples.
+q(S, 34.6090666666667) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, 2,C,o),cell(S, A,D,o), !.
+% 96.0 examples.
+q(S, 26.4378181818182) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, 2,C,o), !.
+% 88.0 examples.
+q(S, 21.0741333333333) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, B,C,o), !.
+% 96.0 examples.
+q(S, 32.8555789473684) :- cell(S, A,B,b),cell(S, B,A,x),cell(S, 1,C,o), !.
+% 76.0 examples.
+q(S, 22.6414743703704) :- cell(S, A,B,b),cell(S, B,A,x), !.
+% 54.0 examples.
+q(S, 49.5053521126761) :- cell(S, A,B,b),cell(S, 1,C,x),cell(S, A,3,x),cell(S, 2,B,x),cell(S, C,A,x), !.
+% 71.0 examples.
+q(S, 40.5470967741936) :- cell(S, A,B,b),cell(S, 1,C,x),cell(S, A,3,x),cell(S, 2,B,x), !.
+% 62.0 examples.
+q(S, 35.0273015873016) :- cell(S, A,B,b),cell(S, 1,C,x),cell(S, A,3,x),cell(S, 2,C,b),cell(S, 3,3,x),cell(S, C,A,o), !.
+% 63.0 examples.
+q(S, 22.4782490566038) :- cell(S, A,B,b),cell(S, 1,C,x),cell(S, A,3,x),cell(S, 2,C,b),cell(S, 3,3,x), !.
+% 106.0 examples.
+q(S, 46.9497435897436) :- cell(S, A,B,b),cell(S, 1,C,x),cell(S, A,3,x),cell(S, 2,C,b),cell(S, 3,1,x), !.
+% 78.0 examples.
+q(S, 30.2597752808989) :- cell(S, A,B,b),cell(S, 1,C,x),cell(S, A,3,x),cell(S, 2,C,b), !.
+% 89.0 examples.
+q(S, 48.384) :- cell(S, A,B,b),cell(S, 1,C,x),cell(S, A,3,x),cell(S, B,1,x), !.
+% 70.0 examples.
+q(S, 36.4776727272727) :- cell(S, A,B,b),cell(S, 1,C,x),cell(S, A,3,x), !.
+% 143.0 examples.
+q(S, 27.8763016393443) :- cell(S, A,B,b),cell(S, 1,C,x),cell(S, B,1,x),cell(S, D,2,o),cell(S, B,D,b), !.
+% 61.0 examples.
+q(S, 35.4696) :- cell(S, A,B,b),cell(S, 1,C,x),cell(S, B,1,x),cell(S, D,2,o),cell(S, 3,A,b), !.
+% 64.0 examples.
+q(S, 46.1538461538462) :- cell(S, A,B,b),cell(S, 1,C,x),cell(S, B,1,x),cell(S, D,2,o), !.
+% 52.0 examples.
+q(S, 20.3890688) :- cell(S, A,B,b),cell(S, 1,C,x),cell(S, B,1,x), !.
+% 70.0 examples.
+q(S, 16.1659259259259) :- cell(S, A,B,b),cell(S, 1,C,x), !.
+% 54.0 examples.
+q(S, 21.42208) :- cell(S, A,B,b), !.
+% 95.0 examples.
+q(S, 50.0).
+% 709.0 examples.
+
+
+%% ADDED With state
+cell(State, A, B, C) :- ggp_true(cell(A, B, C), State).
+row(State, A, B) :- ggp_row(A, B, State).
+column(State, A, B) :- ggp_column(A, B, State).
+diagonal(State, A) :- ggp_diagonal(A, State).
+line(State, A) :- ggp_line(A, State).
+
+
+%% end QTree
+
+qSelectMoves(CurrentState, RandomMoves) :-
+	roles(Roles),
+	(
+		foreach(Role, Roles),
+		foreach(RandomMove, RandomMoves),
+		param(CurrentState)
+		do
+		(
+			legalMoves(CurrentState, Role, LegalMoves),
+			maxQMove(CurrentState, LegalMoves, RandomMove) %% random move = max QMove
+		)
+	).
+
+
+
+%%	State, Movelist, Maxmove, (TempMaxMove), (TempMaxQval)
+maxQMove(CurrentState, [TempMaxMove|T], MaxMove) :- append(TempMaxMove, CurrentState, NS), q(NS,Q1), maxQMove(CurrentState, T, TempMaxMove, MaxMove, Q1). 
+
+maxQMove(_, [], C, C, Y).
+maxQMove(CS, [H|T], TempMaxMove, MaxMove, MaxQval) :-  append(CS, H, NS), q(NS,Q2), ((Q2 > MaxQval) -> maxQMove(CS, T, H, MaxMove, Q2); maxQMove(CS, T, TempMaxMove, MaxMove, MaxQval)). 
+
+
+
+%% random game here
+
+
+randomGame(CurrentState, TerminalState, MovesTemp, Moves) :-
+open('state','append',S), randomGameWR(CurrentState, TerminalState, MovesTemp, Moves, S), close(S).
+
+randomGameWR(CurrentState, TerminalState, MovesTemp, Moves, S) :-
+	(
+		terminalState(CurrentState) ->
+		(
+			TerminalState = CurrentState,
+			Moves = MovesTemp,
+
+				writeln(S,spinazie123), %writeln(S,'.'),				
+				output_data(CurrentState,S),
+				scoresOfAllPlayers(CurrentState,Score),
+				writeln(S, Score),
+				writeln(S,spinazie123) %writeln(S,'.'),
+		);
+		(
+			randomMoves(CurrentState, RandomMoves),
+			nextState(CurrentState, RandomMoves, NextState),
+			append(MovesTemp, [RandomMoves], MovesTemp2),
+				%random(N1),
+				%output_data([begin(model(N1))], S), 
+				writeln(S,spinazie123), %writeln(S,'.'),			
+				% met afterstates geen moves nodig	
+				% output_data([RandomMoves],S), 
+				output_data(CurrentState,S),
+				writeln(S,spinazie123), %writeln(S,'.'),
+			randomGameWR(NextState, TerminalState, MovesTemp2, Moves,S)
+		)
+	).
+% ggp_goal(oplayer, 100, S)
+
+output_data(L,S):-
+        (foreach(X,L),
+        param(S) do
+           writeq(S,X),writeln(S,'.')
+        ).
+
+
+scoresOfAllPlayers(CurrentState, ScoreSet) :-
+	roles(Roles),
+	(
+		foreach(Role, Roles),
+		foreach(score(Role, Score), ScoreSet),
+		param(CurrentState)
+		do
+		(
+			(
+				(ggp_goal(Role, ScoreTemp, CurrentState), !) ->
+				(
+					Score = ScoreTemp
+				);
+				(
+					Score = 0
+				)
+			)
+		)
+	).
+
+currentPlayer(CurrentState, CurrentPlayer) :-
+	roles(Roles),
+	(
+		foreach(Role, Roles),
+		foreach((Role, NumberOfLegalMoves), ListOfRolesWithNumberOfLegalMoves),
+		param(CurrentState)
+		do
+		(
+			legalMoves(CurrentState, Role, LegalMoves),
+			length(LegalMoves, NumberOfLegalMoves)
+		)
+	),
+	sort(2, >, ListOfRolesWithNumberOfLegalMoves, [(CurrentPlayer, _HighestNumberOfLegalMoves) | _TailFromListOfRolesWithNumberOfLegalMoves]).
+
+legalMovesOfAllPlayersCombination(CurrentState, LegalMovesOfAllPlayersCombination) :-
+	roles(Roles),
+	(
+		foreach(Role, Roles),
+		foreach(LegalMoves, ListOfLegalMoves),
+		param(CurrentState)
+		do
+
+		(
+			legalMoves(CurrentState, Role, LegalMovesTemp),
+			antiflatten(LegalMovesTemp, LegalMoves)
+		)
+	),
+	combine(ListOfLegalMoves, LegalMovesOfAllPlayersCombination).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%                                                                           %%
+%% Game classification predicates                                            %%
+%%                                                                           %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+isParallelGame :-
+	initState(InitState),
+	roles(Roles),
+	findStateWhichProvesParallelity(InitState, Roles, 5, 5).
+
+findStateWhichProvesParallelity(_CurrentState, _Roles, _InitTestDepth, 0) :- !, fail.
+findStateWhichProvesParallelity(CurrentState, Roles, InitTestDepth, CurrentTestDepth) :-
+	(
+		terminalState(CurrentState) ->
+		(
+			initState(InitState),
+			TestDepthTemp is InitTestDepth - 1,
+			findStateWhichProvesParallelity(InitState, Roles, TestDepthTemp, TestDepthTemp)
+		);
+		(
+			(
+				isParallelState(CurrentState, Roles, 0) ->
+				(
+					true
+				);
+				(
+					randomMoves(CurrentState, RandomMoves),
+					nextState(CurrentState, RandomMoves, NextState),
+					TestDepthTemp is CurrentTestDepth - 1,
+					findStateWhichProvesParallelity(NextState, Roles, InitTestDepth, TestDepthTemp)
+				)
+			)
+		)
+	).
+
+isParallelState(_CurrentState, _Roles, 2) :- !.
+isParallelState(_CurrentState, [], _NumberOfRolesWithMoreThanOneMove) :- !, fail.
+isParallelState(CurrentState, [Role | Roles], NumberOfRolesWithMoreThanOneMove) :-
+	legalMoves(CurrentState, Role, LegalMoves),
+	length(LegalMoves, NumberOfLegalMoves),
+	(
+		NumberOfLegalMoves > 1 ->
+		(
+			NumberOfRolesWithMoreThanOneMoveTemp is NumberOfRolesWithMoreThanOneMove + 1,
+			isParallelState(CurrentState, Roles, NumberOfRolesWithMoreThanOneMoveTemp)
+		);
+		(
+			isParallelState(CurrentState, Roles, NumberOfRolesWithMoreThanOneMove)
+		)
+	).
+
+numberOfLegalMovesOfAllPlayersCombination(CurrentState, NumberOfLegalMovesOfAllPlayersCombination) :-
+	roles(Roles),
+	(
+		foreach(Role, Roles),
+		fromto(1, In, Out, NumberOfLegalMovesOfAllPlayersCombination),
+		param(CurrentState)
+		do
+		(
+			legalMoves(CurrentState, Role, LegalMoves),
+			length(LegalMoves, NumberOfLegalMoves),
+			Out is In * NumberOfLegalMoves			
+		)
+	).
+
+isInPanicMode(CurrentState) :-
+	not(terminalState(CurrentState)),
+	numberOfLegalMovesOfAllPlayersCombination(CurrentState, NumberOfLegalMovesOfAllPlayersCombination),
+	(
+		NumberOfLegalMovesOfAllPlayersCombination > 1000 ->
+		(
+			true
+		);
+		(
+			fail
+		)
+	).

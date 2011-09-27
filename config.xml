@@ -1,0 +1,22 @@
+<config>
+	<port>5000</port>
+	<hashMapSize>20000</hashMapSize>
+	<UCTK>1.0</UCTK>
+	<RAVEK>1.0</RAVEK>
+	<betaK>10</betaK>
+	<discount>0.99</discount>
+	<progBoundFactor>5</progBoundFactor>
+	<progA>100</progA>
+	<progB>1.1</progB>
+	<divideChildBound>3</divideChildBound>
+	<communicationOverhead>3</communicationOverhead>
+	<ASPMemoryInKB>1000000</ASPMemoryInKB>
+	<cores>2</cores>
+	<tildeSettings>true.</tildeSettings>
+	<temperature>5</temperature>
+	<gamma>0.6</gamma>
+	<gammaQ>1</gammaQ>
+	<thisServer>lanaken</thisServer>
+	<minHorizon>10.0</minHorizon>
+	<aceServer>fleurus</aceServer>
+</config>

@@ -1,0 +1,7 @@
+%%
+%
+%               Qtree template
+%
+%%
+
+qtree :- false.
